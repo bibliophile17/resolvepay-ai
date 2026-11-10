@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ResolvePay AI
 
-## Getting Started
+**Evidence-first payment resolution for small online merchants.**
+Built solo for the PayPal AI Hackathon 2026.
 
-First, run the development server:
+> AI investigates. Evidence supports the decision. The merchant stays in control. PayPal executes.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Everything runs against the **PayPal Sandbox**. No real money moves, and every payment and refund shown is a real Sandbox API result, never a simulation.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## The problem
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Small merchants get complaints like "I was charged twice" or "it arrived damaged". Deciding what to do means checking payment records, customer evidence and refund policy, which are scattered across tools. Acting too fast causes wrong refunds and unhappy customers.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## What it does
 
-## Learn More
+1. The merchant creates and captures a payment through PayPal Sandbox (USD).
+2. A customer complaint is linked to that transaction (optionally with a photo).
+3. The backend re-verifies the capture with PayPal. Only the backend can mark anything "verified".
+4. Gemini classifies and summarises the complaint and returns structured JSON, which is validated with Zod. Invalid output falls back to rules only.
+5. The **Evidence Readiness Engine** (deterministic rules, no LLM) lists what is verified, customer-provided, merchant-provided or missing, and computes an evidence completeness score.
+6. A rule baseline recommendation is computed. The backend always keeps the more cautious of the rule result and the AI suggestion, so the AI can never upgrade to a refund on its own.
+7. The merchant approves or rejects. On approval the backend re-validates payment, currency, amount and remaining refundable balance, then calls the PayPal Sandbox refund API.
+8. The real PayPal response and every step land in an append-only audit trail.
 
-To learn more about Next.js, take a look at the following resources:
+Two complaint types are supported: **damaged product** (needs photo evidence) and **duplicate charge** (verified against payment records).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Evidence completeness is not a verdict
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The score only measures how much of the required information is present. It is not a probability of winning a dispute and not a judgement of whether the customer is truthful.
 
-## Deploy on Vercel
+## Safety design
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- AI never executes refunds and never marks information as verified.
+- Refund execution is server-side only, with explicit merchant approval.
+- An atomic case lock plus a unique database index allow at most one active refund per case.
+- The PayPal idempotency key (PayPal-Request-Id) is the refund row id.
+- The refundable balance is re-read from PayPal at execution time.
+- The PayPal client refuses to run unless the base URL is a Sandbox URL.
+- audit_events rejects updates and deletes at the database level, and an audit write failure stops money movement.
+- Secrets are server-side only. Row level security is on with no public policies.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Stack (all free tier)
+
+Next.js (App Router), TypeScript, Tailwind CSS, Supabase (Postgres and Storage), PayPal Sandbox REST APIs, Google Gemini API (free tier), GitHub, Vercel Hobby.
+
+## AI tools used
+
+- **Gemini API** (Flash model, free tier) for complaint classification, extraction, photo observation and recommendation drafting. Output is schema-validated, and the backend rules override it.
+- The project was built with AI-assisted development (Claude).
+
+## Run locally
+
+1. `npm install`
+2. Copy `.env.example` to `.env.local` and fill in the values.
+3. Create a free Supabase project and run `supabase/schema.sql` in the SQL Editor.
+4. Create PayPal Sandbox **US** business and personal accounts and a REST app. PayPal does not support INR payments, and Indian sandbox accounts cannot transact in USD with each other.
+5. Create a free Gemini API key in Google AI Studio (optional; without it the app uses the rules-only fallback).
+6. `npm run dev`, then open `/api/health` to confirm the setup.
+
+## Known limitations
+
+- Single merchant and no authentication (demo scope), so do not expose a deployment with real credentials.
+- USD only. One refund per case.
+- Sandbox only. No webhooks; state is read from PayPal responses and re-verified on demand.
+- Free-tier AI limits may cause the rules-only fallback to be used.
